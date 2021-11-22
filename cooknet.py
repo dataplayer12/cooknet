@@ -4,8 +4,13 @@ from torchvision import models
 import torch
 import numpy as np
 import time
-from torch.utils.tensorboard import SummaryWriter
-from apex import amp
+
+try:
+	from torch.utils.tensorboard import SummaryWriter
+	from apex import amp
+except:
+	print('tenosrboard and/or apex not available. Don\'t train')
+
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms as T
 from PIL import Image
