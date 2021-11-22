@@ -3,13 +3,16 @@ import torch.optim as optim
 from torchvision import models
 import torch
 import numpy as np
-from dataset import DataManager
-import config as cfg
 import time
 from torch.utils.tensorboard import SummaryWriter
 from apex import amp
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms as T
+from PIL import Image
+import os
+import pdb
+import cv2
+import sys
 
 class ImageData(Dataset):
 	def __init__(self, images, labels, size=[320, 240]):
@@ -26,7 +29,7 @@ class ImageData(Dataset):
 		self.inputsize=size
 		self.transforms=self.random_transforms()
 		if self.labels is not None:
-			assert len(self.image_paths)==self.labels.shape[0]
+			assert len(self.image_paths)==len(self.labels)
 			#number of images and soft targets should be the same
 
 	def random_transforms(self):
@@ -60,7 +63,7 @@ class ImageData(Dataset):
 		if self.labels is None:
 			return img_tensor
 		else:
-			label_tensor=torch.tensor(self.labels[index,:])
+			label_tensor=torch.tensor(self.labels[index])
 			return img_tensor, label_tensor
 			
 			
@@ -81,16 +84,16 @@ class ClassificationManager(object):
 		imgs=[]
 		labels=[]
 		for idx,cls in enumerate(self.classes):
-			clsimgs=os.listdir(self.indir, cls)
+			clsimgs=os.listdir(os.path.join(self.indir, cls))
 			
 			clsimgs=[f for f in clsimgs if f.endswith('.png')]
 			imgs.extend([os.path.join(self.indir,cls,f) for f in clsimgs])
 			labels.extend([idx]*len(clsimgs))
 		
 		if shuffle:
-			order=np.random.permute(len(imgs))
-			imgs=imgs[order]
-			labels=labels[order]
+			order=np.random.permutation(len(imgs))
+			imgs=[imgs[ox] for ox in order]
+			labels=[labels[ox] for ox in order]
 		
 		return imgs, labels
 		
@@ -111,43 +114,111 @@ class ClassificationManager(object):
 		allfiles=sorted(os.listdir(self.indir))
 		
 		allclasses=[f for f in allfiles if os.path.isdir(os.path.join(self.indir,f))]
+		allclasses=[f for f in allclasses if not f.startswith('.')]
+		allclasses=[f for f in allclasses if not f.startswith('_')]
+		print('Found {} classes: {}'.format(len(allclasses), allclasses))
 		
+		with open('labels.txt','w') as f:
+			f.write('\n'.join(allclasses))
+
 		return len(allclasses), allclasses
 		
-	def get_train_loader():
+	def get_train_loader(self):
 		pass
 		tdata=ImageData(self.timages, self.tlabels)
 		tloader=DataLoader(tdata, self.batchsize, shuffle=True, num_workers=8)
-		
 		return tloader
 		
-		
-	def get_valid_loader():
+	def get_valid_loader(self):
 		pass
 		vdata=ImageData(self.vimages, self.vlabels)
-		vloader=DataLoader(tdata, self.batchsize, shuffle=True, num_workers=8)
+		vloader=DataLoader(vdata, self.batchsize, shuffle=True, num_workers=8)
 		return vloader
 		
 class CookNet(nn.Module):
-	def __init__(self, nclasses, resnetpath):
+	def __init__(self, nclasses, resnetpath=None, loadpath=None):
 		super(CookNet, self).__init__()
 		self.nclasses=nclasses
 		fullmodel=models.resnet18(pretrained=False)
-		if os.path.exists(resnetpath):
+		if resnetpath and os.path.exists(resnetpath):
 			fullmodel.load_state_dict(torch.load(resnetpath, map_location=torch.device('cpu')))
 		else:
 			print('Could not find pretrained resnet at {}'.format(resnetpath))
 			
 		self.backbone=nn.Sequential(*list(fullmodel.children())[:-1])
+		self.flatten=nn.Flatten()
 		hidden_dim=list(fullmodel.children())[-1].in_features
 		self.linear=nn.Linear(hidden_dim, self.nclasses)
+
+		if loadpath and os.path.exists(loadpath):
+			self.load_state_dict(torch.load(loadpath, map_location=torch.device('cpu')))
 		
 	def forward(self, x):
+		#print(x.shape)
 		x=self.backbone(x)
-		x=linear(x)
+		#print(x.shape)
+		x=self.flatten(x)
+		x=self.linear(x)
 		
 		return x
-		
+
+	def infervideo(self, infile, cropdims):
+		src=cv2.VideoCapture(infile)
+		ret,frame=src.read()
+		intt=T.Compose([T.ToTensor(), T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+
+		if not ret:
+			print('Could not read {}'.format(infile))
+			quit()
+
+		fps=float(src.get(cv2.CAP_PROP_FPS))
+		w=int(src.get(cv2.CAP_PROP_FRAME_WIDTH))
+		h=int(src.get(cv2.CAP_PROP_FRAME_HEIGHT))
+		#fcc=int(src.get(cv2.CAP_PROP_FOURCC))
+		outname=infile[:infile.rfind('.')]+'_infer.mp4'
+
+		if os.path.exists(outname):
+			os.remove(outname)
+
+		dst=cv2.VideoWriter(outname, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w,h))
+		print('Writing to {}'.format(outname))
+
+		if os.path.exists('labels.txt'):
+			with open('labels.txt','r') as f:
+				labels=f.read().split('\n')
+		else:
+			labels=['no steam','steam!']
+
+		x,y,w,h=cropdims
+		self.eval()
+
+		interpc=lambda x: (0,255-int(255*x),int(255*x)) #(0,255,0)-->(0,0,255)
+		sprobs=[]
+		self.cuda()
+		nframes=int(src.get(cv2.CAP_PROP_FRAME_COUNT))
+		count=0
+		with torch.no_grad():
+			while ret:
+				cropped=frame[y:y+h,x:x+w,:]
+				intensor=intt(cropped)[None,...].cuda()
+				out=self.forward(intensor)
+				out=nn.functional.softmax(out).to('cpu').detach().numpy()
+				color=interpc(out[0,1])
+				clabel=labels[out[0].argmax()]
+				sprobs.append(out[0,1])
+				newframe=cv2.rectangle(frame,(x,y),(x+w,y+h),color,2)
+				newframe=cv2.putText(newframe, clabel, (x,y+h), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color)
+				dst.write(newframe)
+				ret,frame=src.read()
+				count+=1
+				sys.stdout.write("\rProgress: {}/{}".format(count,nframes))
+
+		src.release()
+		dst.release()
+		with open('steamprobs.txt','w') as f:
+			f.write(str(sprobs))
+
+
 class CookTrainer(object):
 	def __init__(self, net, dm):
 		pass
@@ -155,20 +226,21 @@ class CookTrainer(object):
 		self.dm=dm
 
 		self.writer=SummaryWriter()
-
-		self.optimizer=optim.Adam(self.net.parameters(), lr=1e-3)
+		self.criterion=nn.CrossEntropyLoss()
+		self.optimizer=optim.Adam(self.net.parameters(), lr=1e-5)
+		self.savepath=None
 
 	def train(self, epochs, save):
 		pass
-		eval_interval=1000
-
+		eval_interval=200
+		self.savepath=save
 		device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 		train_loader, valid_loader = self.dm.train_loader, self.dm.valid_loader #ignore test loader if any
 
 		self.net.to(device).train()
 
 		self.net, self.optimizer = amp.initialize(self.net, self.optimizer,
-									opt_level='O2', enabled=True)
+									opt_level='O0', enabled=False)
 
 		step=0
 		
@@ -186,27 +258,38 @@ class CookTrainer(object):
 				
 				loss = self.criterion(pred,y)
 
-				self.writer.add_scalar('Loss', loss.item(), step)
+				self.writer.add_scalar('Training Loss', loss.item(), step)
 
 				with amp.scale_loss(loss, self.optimizer) as scaled_loss:
 					scaled_loss.backward()
 
+				torch.nn.utils.clip_grad_norm_(self.net.parameters(), 0.01)
 				self.optimizer.step()
 				acc=get_accuracy(pred, y)
 				step+=1
-				
-				if step%eval_interval==0:
-					self.student_network.eval()
+				self.writer.add_scalar('Training Accuracy', acc, step)
+				#print('Accuracy={:.4f}'.format(acc))
 
+				if step%eval_interval==0:
+					self.net.eval()
+					valoss=[]
+					vaacc=[]
 					with torch.no_grad():
 						pass
-						for imgs, pred in valid_loader:
+						for imgs, ys in valid_loader:
 							imgs=imgs.to(device)
-							stylized=self.student_network(imgs)
-							self.writer.add_images('Stylized Examples', stylized, step)
-							break #just one batch is enough
+							ys=ys.to(device)
+							preds=self.net(imgs)
+							vacc=get_accuracy(preds, ys)
+							vloss=self.criterion(preds, ys)
+							#pdb.set_trace()
+							valoss.append(vloss.flatten().item())
+							vaacc.append(vacc)
 
-					self.student_network.train()
+					#print(valoss[0])
+					self.writer.add_scalar('Validation Loss', np.mean(valoss), step)
+					self.writer.add_scalar('Validation Accuracy', np.mean(vaacc), step)
+					self.net.train()
 
 			self.save(epoch)
 			eend=time.time()
@@ -215,12 +298,15 @@ class CookTrainer(object):
 	def save(self, epoch):
 		if self.savepath:
 			path=self.savepath.format(epoch)
-			torch.save(self.student_network.state_dict(), path)
+			torch.save(self.net.state_dict(), path)
 			print(f'Saved model to {path}')
 
 		
 def main():
 	dm=ClassificationManager('./data')
-	net=CookNet(insize=(240,320), outdims=dm.nclasses)
-	trainer=CookNetTrainer(net,dm)
-	trainer.train(epochs=100, save='cook_{}.pth')
+	net=CookNet(nclasses=dm.nclasses, resnetpath='./resnet18_320p.pth', loadpath=None)
+	trainer=CookTrainer(net,dm)
+	trainer.train(epochs=100, save='models/cook_{}.pth')
+
+if __name__=='__main__':
+	main()
