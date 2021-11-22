@@ -13,6 +13,7 @@ import os
 import pdb
 import cv2
 import sys
+from data.selectroi import getcoordinates
 
 class ImageData(Dataset):
 	def __init__(self, images, labels, size=[320, 240]):
@@ -75,7 +76,6 @@ class ClassificationManager(object):
 		self.timages, self.tlabels, self.vimages, self.vlabels=self.split_train_valid(ratio=0.8)
 
 		self.batchsize=bsize
-		
 		self.train_loader=self.get_train_loader()
 		self.valid_loader=self.get_valid_loader()
 		
@@ -153,6 +153,15 @@ class CookNet(nn.Module):
 		if loadpath and os.path.exists(loadpath):
 			self.load_state_dict(torch.load(loadpath, map_location=torch.device('cpu')))
 		
+		self.intt=T.Compose([T.ToTensor(), T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+		#pre-processing for input image
+
+		if os.path.exists('labels.txt'):
+			with open('labels.txt','r') as f:
+				self.labels=f.read().split('\n')
+		else:
+			self.labels=['no steam','steam!']
+
 	def forward(self, x):
 		#print(x.shape)
 		x=self.backbone(x)
@@ -162,10 +171,28 @@ class CookNet(nn.Module):
 		
 		return x
 
+	def inferframe(self, frame, cropdims, annotate=True):
+		pass
+		interpc=lambda x: (0,255-int(255*x),int(255*x)) #(0,255,0)-->(0,0,255)
+		x,y,w,h=cropdims
+		cropped=frame[y:y+h,x:x+w,:]
+		intensor=self.intt(cropped)[None,...].cuda()
+		out=self.forward(intensor)
+		out=nn.functional.softmax(out).to('cpu').detach().numpy()
+		color=interpc(out[0,1])
+		clabel=labels[out[0].argmax()]
+
+		if annotate:
+			newframe=cv2.rectangle(frame,(x,y),(x+w,y+h),color,2)
+			newframe=cv2.putText(newframe, clabel, (x,y+h), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color)
+			return out, newframe
+
+		return out
+
 	def infervideo(self, infile, cropdims):
 		src=cv2.VideoCapture(infile)
 		ret,frame=src.read()
-		intt=T.Compose([T.ToTensor(), T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+		
 
 		if not ret:
 			print('Could not read {}'.format(infile))
@@ -183,31 +210,16 @@ class CookNet(nn.Module):
 		dst=cv2.VideoWriter(outname, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w,h))
 		print('Writing to {}'.format(outname))
 
-		if os.path.exists('labels.txt'):
-			with open('labels.txt','r') as f:
-				labels=f.read().split('\n')
-		else:
-			labels=['no steam','steam!']
-
-		x,y,w,h=cropdims
 		self.eval()
 
-		interpc=lambda x: (0,255-int(255*x),int(255*x)) #(0,255,0)-->(0,0,255)
 		sprobs=[]
 		self.cuda()
 		nframes=int(src.get(cv2.CAP_PROP_FRAME_COUNT))
 		count=0
 		with torch.no_grad():
 			while ret:
-				cropped=frame[y:y+h,x:x+w,:]
-				intensor=intt(cropped)[None,...].cuda()
-				out=self.forward(intensor)
-				out=nn.functional.softmax(out).to('cpu').detach().numpy()
-				color=interpc(out[0,1])
-				clabel=labels[out[0].argmax()]
+				out, newframe = self.inferframe(frame, cropdims, annotate=True)
 				sprobs.append(out[0,1])
-				newframe=cv2.rectangle(frame,(x,y),(x+w,y+h),color,2)
-				newframe=cv2.putText(newframe, clabel, (x,y+h), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color)
 				dst.write(newframe)
 				ret,frame=src.read()
 				count+=1
@@ -217,6 +229,40 @@ class CookNet(nn.Module):
 		dst.release()
 		with open('steamprobs.txt','w') as f:
 			f.write(str(sprobs))
+
+	def inferlive(self, cam='/dev/video0', temp_path='data/0930_t.png', save_path=None):
+		src=cv2.VideoCapture(cam)
+		time.sleep(1)
+		ret,frame=src.read()
+		
+		if not ret:
+			print('Cannot read camera')
+			quit()
+
+		dst=None
+
+		if save_path:
+			fps=src.get(cv2.CAP_PROP_FPS)
+			h, w, _ = frame.shape
+			dst=cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w,h))
+
+		self.eval()
+		self.cuda()
+		temp=cv2.imread(temp_path, 1)
+		minx, miny, maxx, maxy = getcoordinates(frame, temp, exportlog=True)
+		cropdims=[minx, miny, maxx-minx, maxy-miny]
+		while ret:
+			newframe=self.inferframe(frame, cropdims, True)
+			if dst:
+				dst.write(newframe)
+			cv2.imshow('result', newframe)
+			k=cv2.waitKey(1)
+			if k==ord('q'):
+				break
+			ret,frame = src.read()
+
+		src.release()
+		dst.release()
 
 
 class CookTrainer(object):

@@ -3,18 +3,28 @@ import os
 
 
 def getcoordinates(vname,tname, channel='red', exportlog=False):
+    """
+    vname: video name (string) or numpy ndarray video frame
+    tname: img filename (string) or numpy ndarray
+    """
     cmappings={'blue':0,'green':1,'red':2,'all':[0,1,2]}
 
-    src=cv2.VideoCapture(vname)
-    fps=src.get(cv2.CAP_PROP_FPS)
-    src.set(cv2.CAP_PROP_POS_FRAMES, int(60*fps))
+    if type(vname)==str:
+        src=cv2.VideoCapture(vname)
+        fps=src.get(cv2.CAP_PROP_FPS)
+        src.set(cv2.CAP_PROP_POS_FRAMES, int(60*fps))
 
-    ret,frame=src.read()
+        ret,frame=src.read()
+        if not ret:
+            print('Could not read video {}'.format(vname))
+            quit()
+    else:
+        frame=vname[:] #vname can be just a numpy array
 
-    if not ret:
-        print('Could not read video {}'.format(vname))
-
-    temp=cv2.imread(tname,1)
+    if type(tname)==str:
+        temp=cv2.imread(tname,1)
+    else:
+        temp=tname[:]
 
     temp=temp[:,:,cmappings[channel]]
     frame=frame[:,:,cmappings[channel]]
