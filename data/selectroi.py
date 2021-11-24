@@ -63,11 +63,13 @@ def getcoordinates(vname,tname, channel='red', exportlog=False):
     #src.release()
     
     if exportlog:
-        ret, frame=src.read()
+        if type(vname)==str:
+            ret, frame=src.read()
         newframe=cv2.rectangle(frame, (minx,miny), (maxx, maxy), (255,0,255), 2)
         cv2.imwrite('demo_rect.png', newframe)
 
-    src.release()
+    if type(vname)==str:
+        src.release()
 
     return [minx, miny, maxx, maxy]
 

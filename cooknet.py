@@ -176,20 +176,27 @@ class CookNet(nn.Module):
 		
 		return x
 
-	def inferframe(self, frame, cropdims, annotate=True):
+	def inferframe(self, frame, cropdims, annotate=True, fps=None):
 		pass
 		interpc=lambda x: (0,255-int(255*x),int(255*x)) #(0,255,0)-->(0,0,255)
 		x,y,w,h=cropdims
+		x=max(0,x-2)
+		y=max(0,y-2)
+		w+=4
+		h+=4
 		cropped=frame[y:y+h,x:x+w,:]
 		intensor=self.intt(cropped)[None,...].cuda()
 		out=self.forward(intensor)
 		out=nn.functional.softmax(out).to('cpu').detach().numpy()
 		color=interpc(out[0,1])
-		clabel=labels[out[0].argmax()]
+		clabel=self.labels[out[0].argmax()]
 
 		if annotate:
 			newframe=cv2.rectangle(frame,(x,y),(x+w,y+h),color,2)
-			newframe=cv2.putText(newframe, clabel, (x,y+h), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color)
+			#newframe=cv2.putText(newframe, clabel, (x,y+h), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color)
+			if fps is not None:
+				fpstr='FPS= {:.2f}'.format(fps)
+				newframe=cv2.putText(newframe, fpstr, (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color)
 			return out, newframe
 
 		return out
@@ -235,11 +242,12 @@ class CookNet(nn.Module):
 		with open('steamprobs.txt','w') as f:
 			f.write(str(sprobs))
 
-	def inferlive(self, cam='/dev/video0', temp_path='data/0930_t.png', save_path=None):
+	def inferlive(self, cam='/dev/video0', temp_path='data/0930_t.png', save_path=None, really_not_steaming=False):
 		src=cv2.VideoCapture(cam)
 		time.sleep(1)
 		ret,frame=src.read()
-		
+		oldframe=frame[:]
+		fps=0.0
 		if not ret:
 			print('Cannot read camera')
 			quit()
@@ -257,15 +265,26 @@ class CookNet(nn.Module):
 		minx, miny, maxx, maxy = getcoordinates(frame, temp, exportlog=True)
 		cropdims=[minx, miny, maxx-minx, maxy-miny]
 		while ret:
-			newframe=self.inferframe(frame, cropdims, True)
+			start=time.time()
+			out, newframe=self.inferframe(frame, cropdims, True, fps)
+			endt=time.time()
+			fps=0.9*fps+0.1/(endt-start)
+
 			if dst:
 				dst.write(newframe)
-			cv2.imshow('result', newframe)
+			cv2.imshow('result', np.array(newframe))
 			k=cv2.waitKey(1)
 			if k==ord('q'):
 				break
-			ret,frame = src.read()
 
+			if really_not_steaming:
+				if out[0,1]>=0.8: #not steaming but still predicted as steam
+					fname='./data/nosteam/{}.png'.format(int(1000*time.time()))
+					cropped=oldframe[miny:maxy,minx:maxx,:]
+					cv2.imwrite(fname, cropped)
+
+			ret,frame = src.read()
+			oldframe=frame[:]
 		src.release()
 		dst.release()
 
