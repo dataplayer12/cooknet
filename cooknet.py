@@ -157,7 +157,7 @@ class CookNet(nn.Module):
 
 		if loadpath and os.path.exists(loadpath):
 			self.load_state_dict(torch.load(loadpath, map_location=torch.device('cpu')))
-		
+			print('Loaded pretrained model from {}'.format(loadpath))
 		self.intt=T.Compose([T.ToTensor(), T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 		#pre-processing for input image
 
@@ -242,31 +242,37 @@ class CookNet(nn.Module):
 		with open('steamprobs.txt','w') as f:
 			f.write(str(sprobs))
 
-	def inferlive(self, cam='/dev/video0', temp_path='data/0930_t.png', save_path=None, really_not_steaming=False):
+	def inferlive(self, cam='/dev/video0', temp_path='data/0930_t.png', save_path=None, really_not_steaming=False, cropdims=None):
 		src=cv2.VideoCapture(cam)
 		time.sleep(1)
 		ret,frame=src.read()
 		oldframe=frame[:]
 		fps=0.0
+		sprobs=[]
 		if not ret:
 			print('Cannot read camera')
 			quit()
 
 		dst=None
+		spsave=None
 
 		if save_path:
 			fps=src.get(cv2.CAP_PROP_FPS)
 			h, w, _ = frame.shape
 			dst=cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w,h))
+			spsave=save_path[:save_path.rfind('.')]+'_probs.txt'
 
 		self.eval()
 		self.cuda()
 		temp=cv2.imread(temp_path, 1)
-		minx, miny, maxx, maxy = getcoordinates(frame, temp, exportlog=True)
-		cropdims=[minx, miny, maxx-minx, maxy-miny]
+		if cropdims is None:
+			minx, miny, maxx, maxy = getcoordinates(frame, temp, exportlog=True)
+			cropdims=[minx, miny, maxx-minx, maxy-miny]
+
 		while ret:
 			start=time.time()
 			out, newframe=self.inferframe(frame, cropdims, True, fps)
+			sprobs.append(out[0,1])
 			endt=time.time()
 			fps=0.9*fps+0.1/(endt-start)
 
@@ -285,6 +291,10 @@ class CookNet(nn.Module):
 
 			ret,frame = src.read()
 			oldframe=frame[:]
+
+		if spsave:
+			with open(spsave,'w') as f:
+	                        f.write(str(sprobs))
 		src.release()
 		dst.release()
 
