@@ -70,6 +70,7 @@ class ImageData(Dataset):
 			return img_tensor
 		else:
 			label_tensor=torch.tensor(self.labels[index])
+
 			return img_tensor, label_tensor
 			
 			
@@ -144,7 +145,7 @@ class CookNet(nn.Module):
 	def __init__(self, nclasses, resnetpath=None, loadpath=None):
 		super(CookNet, self).__init__()
 		self.nclasses=nclasses
-		fullmodel=models.resnet18(pretrained=False)
+		fullmodel=models.resnet18(pretrained=True)
 		if resnetpath and os.path.exists(resnetpath):
 			fullmodel.load_state_dict(torch.load(resnetpath, map_location=torch.device('cpu')))
 		else:
@@ -173,7 +174,6 @@ class CookNet(nn.Module):
 		#print(x.shape)
 		x=self.flatten(x)
 		x=self.linear(x)
-		
 		return x
 
 	def inferframe(self, frame, cropdims, annotate=True, fps=None):
@@ -307,7 +307,7 @@ class CookTrainer(object):
 
 		self.writer=SummaryWriter()
 		self.criterion=nn.CrossEntropyLoss()
-		self.optimizer=optim.Adam(self.net.parameters(), lr=1e-5)
+		self.optimizer=optim.AdamW(self.net.parameters(), lr=1e-6)
 		self.savepath=None
 
 	def train(self, epochs, save):
@@ -319,8 +319,8 @@ class CookTrainer(object):
 
 		self.net.to(device).train()
 
-		self.net, self.optimizer = amp.initialize(self.net, self.optimizer,
-									opt_level='O0', enabled=False)
+		# self.net, self.optimizer = amp.initialize(self.net, self.optimizer,
+		# 							opt_level='O0', enabled=False)
 
 		step=0
 		
@@ -335,13 +335,17 @@ class CookTrainer(object):
 				y=y.to(device)
 				
 				pred = self.net(x)
+				#print(pred.shape, y.shape)
 				
 				loss = self.criterion(pred,y)
 
+				#print(loss.item())
 				self.writer.add_scalar('Training Loss', loss.item(), step)
 
-				with amp.scale_loss(loss, self.optimizer) as scaled_loss:
-					scaled_loss.backward()
+				# with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+				# 	scaled_loss.backward()
+
+				loss.backward()
 
 				torch.nn.utils.clip_grad_norm_(self.net.parameters(), 0.01)
 				self.optimizer.step()
@@ -383,8 +387,8 @@ class CookTrainer(object):
 
 		
 def main():
-	dm=ClassificationManager('./data')
-	net=CookNet(nclasses=dm.nclasses, resnetpath='./resnet18_320p.pth', loadpath=None)
+	dm=ClassificationManager('./data') #'./resnet18_320p.pth'
+	net=CookNet(nclasses=dm.nclasses, resnetpath=None, loadpath=None)
 	trainer=CookTrainer(net,dm)
 	trainer.train(epochs=100, save='models/cook_{}.pth')
 
