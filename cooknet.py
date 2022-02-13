@@ -11,6 +11,16 @@ try:
 except:
 	print('tenosrboard and/or apex not available. Don\'t train')
 
+try:
+	from RPi import GPIO
+	GPIO.setmode(GPIO.BOARD)
+	output_pin=18
+	GPIO.setup(output_pin, GPIO.OUT)
+	GPIO.output(output_pin,GPIO.HIGH)
+	print('GPIO set up successfully and ready to control')
+except:
+	print('GPIO not found. Don\'t control')
+
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms as T
 from PIL import Image
@@ -180,14 +190,15 @@ class CookNet(nn.Module):
 		pass
 		interpc=lambda x: (0,255-int(255*x),int(255*x)) #(0,255,0)-->(0,0,255)
 		x,y,w,h=cropdims
-		x=max(0,x-2)
-		y=max(0,y-2)
-		w+=4
-		h+=4
+		#x=max(0,x-2)
+		#y=max(0,y-2)
+		#w+=4
+		#h+=4
 		cropped=frame[y:y+h,x:x+w,:]
-		intensor=self.intt(cropped)[None,...].cuda()
+		intensor=self.intt(cropped)[None,...].cuda()#.half()
 		out=self.forward(intensor)
-		out=nn.functional.softmax(out).to('cpu').detach().numpy()
+		out=nn.functional.softmax(out, dim=1).to('cpu').detach().numpy().astype(np.float32)
+		#print(out.shape)
 		color=interpc(out[0,1])
 		clabel=self.labels[out[0].argmax()]
 
@@ -205,7 +216,6 @@ class CookNet(nn.Module):
 		src=cv2.VideoCapture(infile)
 		ret,frame=src.read()
 		
-
 		if not ret:
 			print('Could not read {}'.format(infile))
 			quit()
@@ -242,7 +252,14 @@ class CookNet(nn.Module):
 		with open('steamprobs.txt','w') as f:
 			f.write(str(sprobs))
 
-	def inferlive(self, cam='/dev/video0', temp_path='data/0930_t.png', save_path=None, really_not_steaming=False, cropdims=None):
+	def inferlive(self, cam='/dev/video0', 
+		temp_path='data/0930_t.png', 
+		save_path=None, 
+		really_not_steaming=False, 
+		cropdims=None,
+		save_raw=False,
+		do_control=False):
+
 		src=cv2.VideoCapture(cam)
 		time.sleep(1)
 		ret,frame=src.read()
@@ -253,31 +270,49 @@ class CookNet(nn.Module):
 			print('Cannot read camera')
 			quit()
 
-		dst=None
+		dsti=None #handle for inferred video
+		dstr=None #handle for raw video, used if save_raw=True
 		spsave=None
+		stop_condition=False #bool for condition to stop cooking,
+		#used if do_control=True
+		has_stopped=False
 
 		if save_path:
 			fps=src.get(cv2.CAP_PROP_FPS)
 			h, w, _ = frame.shape
-			dst=cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w,h))
+			if save_raw:
+				raw_path=save_path[:save_path.rfind('.')]+'_r'+savepath[savepath.rfind('.'):]
+				dstr=cv2.VideoWriter(raw_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w,h))
+				#|^| destination for raw video
+			else:
+				dstr=None
+
+			dsti=cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w,h))
+			#|^| destination for inferred video
+
 			spsave=save_path[:save_path.rfind('.')]+'_probs.txt'
 
 		self.eval()
 		self.cuda()
+		
 		temp=cv2.imread(temp_path, 1)
 		if cropdims is None:
 			minx, miny, maxx, maxy = getcoordinates(frame, temp, exportlog=True)
 			cropdims=[minx, miny, maxx-minx, maxy-miny]
 
 		while ret:
+			oldframe=frame[:]
 			start=time.time()
 			out, newframe=self.inferframe(frame, cropdims, True, fps)
 			sprobs.append(out[0,1])
 			endt=time.time()
 			fps=0.9*fps+0.1/(endt-start)
 
-			if dst:
-				dst.write(newframe)
+			if dsti:
+				dsti.write(newframe)
+			if dstr:
+				dstr.write(oldframe)
+
 			cv2.imshow('result', np.array(newframe))
 			k=cv2.waitKey(1)
 			if k==ord('q'):
@@ -289,14 +324,68 @@ class CookNet(nn.Module):
 					cropped=oldframe[miny:maxy,minx:maxx,:]
 					cv2.imwrite(fname, cropped)
 
+			if do_control:
+				if len(sprobs)%100==0:
+					#smoothed_probability=np.mean(sprobs[-100:])
+					stop=self.is_cooked(sprobs)
+					if stop:
+						GPIO.output(output_pin, GPIO.LOW)
+						has_stopped=time.time()
+						print('STOP: Turned off IH')
+						#IH will not turn on once switched off
+					else:
+						print('RUN: Not cooked, continuing')
+
 			ret,frame = src.read()
-			oldframe=frame[:]
+
+			if has_stopped:
+				if (time.time()-has_stopped)>180: #3 minutes
+					print('Finished cooking and cooled off. Goodbye')
+					break
 
 		if spsave:
 			with open(spsave,'w') as f:
-	                        f.write(str(sprobs))
+				f.write(str(sprobs))
+
 		src.release()
-		dst.release()
+
+		if dsti:
+			dsti.release()
+		if dstr:
+			dstr.release()
+
+	def is_cooked(self, probs, 
+		chunksize=100, 
+		pthreshold=0.5,
+		mthreshold=0.1,
+		sthreshold=0.2
+		):
+		'''
+		probs: list of steam probability
+		pthreshold: probability threshold
+		mthreshold: max diff threshold in last 5 chunks
+		sthreshold: sum threshold in last 5 chunks
+		'''
+		nchunks=5
+
+		if len(probs)>=nchunks*chunksize:
+			last5=np.array(probs[-nchunks*chunksize:]).reshape((nchunks,chunksize)).mean(axis=1)
+
+			if last5[-1]>threshold:
+				print('STOP: Last {} frames steam prob= {:.3f}'.format(chunksize, last5[-1]))
+				return True
+
+			mdiff=np.diff(last5).max()
+			sdiff=np.diff(last5).sum() #this will also include negative values
+
+			if mdiff>=mthreshold:
+				print('STOP: Max change in last 5 chunks={:.3f}'.format(mdiff))
+				return True
+			if sdiff>=sthreshold:
+				print('STOP: Sum of diffs in last 5 chunks={:.3f}'.format(sdiff))
+				return True
+
+		return False
 
 
 class CookTrainer(object):
