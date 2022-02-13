@@ -281,13 +281,14 @@ class CookNet(nn.Module):
 			fps=src.get(cv2.CAP_PROP_FPS)
 			h, w, _ = frame.shape
 			if save_raw:
-				raw_path=save_path[:save_path.rfind('.')]+'_r'+savepath[savepath.rfind('.'):]
+				raw_path=save_path[:save_path.rfind('.')]+'_r'+save_path[save_path.rfind('.'):]
 				dstr=cv2.VideoWriter(raw_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w,h))
 				#|^| destination for raw video
 			else:
 				dstr=None
 
-			dsti=cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w,h))
+			inf_path=save_path[:save_path.rfind('.')]+'_i'+save_path[save_path.rfind('.'):]
+			dsti=cv2.VideoWriter(inf_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w,h))
 			#|^| destination for inferred video
 
 			spsave=save_path[:save_path.rfind('.')]+'_probs.txt'
@@ -302,6 +303,10 @@ class CookNet(nn.Module):
 
 		while ret:
 			oldframe=frame[:]
+			
+			if dstr:
+				dstr.write(oldframe)
+
 			start=time.time()
 			out, newframe=self.inferframe(frame, cropdims, True, fps)
 			sprobs.append(out[0,1])
@@ -310,8 +315,6 @@ class CookNet(nn.Module):
 
 			if dsti:
 				dsti.write(newframe)
-			if dstr:
-				dstr.write(oldframe)
 
 			cv2.imshow('result', np.array(newframe))
 			k=cv2.waitKey(1)
@@ -328,7 +331,7 @@ class CookNet(nn.Module):
 				if len(sprobs)%100==0:
 					#smoothed_probability=np.mean(sprobs[-100:])
 					stop=self.is_cooked(sprobs)
-					if stop:
+					if not has_stopped and stop:
 						GPIO.output(output_pin, GPIO.LOW)
 						has_stopped=time.time()
 						print('STOP: Turned off IH')
@@ -354,7 +357,8 @@ class CookNet(nn.Module):
 		if dstr:
 			dstr.release()
 
-	def is_cooked(self, probs, 
+	def is_cooked(self, 
+		probs, 
 		chunksize=100, 
 		pthreshold=0.5,
 		mthreshold=0.1,
@@ -371,7 +375,7 @@ class CookNet(nn.Module):
 		if len(probs)>=nchunks*chunksize:
 			last5=np.array(probs[-nchunks*chunksize:]).reshape((nchunks,chunksize)).mean(axis=1)
 
-			if last5[-1]>threshold:
+			if last5[-1]>pthreshold:
 				print('STOP: Last {} frames steam prob= {:.3f}'.format(chunksize, last5[-1]))
 				return True
 
@@ -384,6 +388,8 @@ class CookNet(nn.Module):
 			if sdiff>=sthreshold:
 				print('STOP: Sum of diffs in last 5 chunks={:.3f}'.format(sdiff))
 				return True
+
+			print('CONTINUE: Last {} frames steam prob= {:.3f}'.format(chunksize, last5[-1]))
 
 		return False
 
