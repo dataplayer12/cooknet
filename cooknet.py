@@ -262,6 +262,7 @@ class CookNet(nn.Module):
 
 		src=cv2.VideoCapture(cam)
 		time.sleep(1)
+		fcount=0
 		ret,frame=src.read()
 		oldframe=frame[:]
 		fps=0.0
@@ -269,6 +270,9 @@ class CookNet(nn.Module):
 		if not ret:
 			print('Cannot read camera')
 			quit()
+
+		with open('continue.txt','w') as f:
+			f.write('Delete this file to stop cooking')
 
 		dsti=None #handle for inferred video
 		dstr=None #handle for raw video, used if save_raw=True
@@ -303,7 +307,8 @@ class CookNet(nn.Module):
 
 		while ret:
 			oldframe=frame[:]
-			
+			fcount+=1
+
 			if dstr:
 				dstr.write(oldframe)
 
@@ -340,6 +345,10 @@ class CookNet(nn.Module):
 						print('RUN: Not cooked, continuing')
 
 			ret,frame = src.read()
+			
+			if fcount%100==0 and not os.path.exists('continue.txt'):
+				ret=False
+				print('Received stop signal from file')
 
 			if has_stopped:
 				if (time.time()-has_stopped)>180: #3 minutes
