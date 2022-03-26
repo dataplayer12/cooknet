@@ -114,9 +114,14 @@ def generate_images(vname, tname, break_point, widths, channel='red'):
 
 if __name__=='__main__':
     pass
-    # generate_images('cooker0930.mp4', '0930_t.png', 2645, [360, 0])
+    # generate_images('cooker0930.mp4', '0930_round.png', 2645, [360, 0])
     # generate_images('openpan1002.mp4', 'op1002_t.png', 1350, [360, 0], channel='all')
+    # generate_images('cook_0215.mp4', 'op1002_t.png', 140, [135, 0], channel='all')
+    # generate_images('cook_0220.mp4', '1031_round.png', 1208, [360, 0])
+    # generate_images('cook_0306.mp4', '1031_round.png', 985, [360, 0])
+    # generate_images('cook_0313.mp4', '1031_round.png', 1220, [360, 0])
+    generate_images('cook_0326.mp4', '1031_round.png', 648, [120, 0])
     # generate_images('cooker1013.mp4', '138.png', 3885, [600,0])
-    # generate_images('cooker1031.mp4', '0930_t.png', 2840, [600, 0]) #202,0,522, 240
-    print(getcoordinates('cooker1107.mp4', '0930_t.png', exportlog=True))
+    # generate_images('cooker1031.mp4', '1031_round.png', 2840, [600, 0]) #202,0,522, 240
+    #print(getcoordinates('cooker1107.mp4', '0930_t.png', exportlog=True))
     pass
