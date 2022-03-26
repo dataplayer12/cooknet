@@ -1,1 +1,6 @@
-data/*
+*.pth
+data/*.mp4
+*AppleDouble*
+*.txt
+*.png
+*pycache*
