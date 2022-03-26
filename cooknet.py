@@ -344,6 +344,8 @@ class CookNet(nn.Module):
 						has_stopped=time.time()
 						print('STOP: Turned off IH')
 						#IH will not turn on once switched off
+					elif has_stopped and not stop:
+						print('STOP: Previously turned off IH')
 					else:
 						print('RUN: Not cooked, continuing')
 
@@ -381,8 +383,8 @@ class CookNet(nn.Module):
 	def is_cooked(self, 
 		probs, 
 		chunksize=100, 
-		pthreshold=0.7,
-		mthreshold=0.1,
+		pthreshold=0.5,
+		mthreshold=0.2,
 		sthreshold=0.2
 		):
 		'''
