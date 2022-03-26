@@ -258,7 +258,9 @@ class CookNet(nn.Module):
 		really_not_steaming=False, 
 		cropdims=None,
 		save_raw=False,
-		do_control=False):
+		do_control=False,
+		get_cook_signal=False,
+		display=True):
 
 		src=cv2.VideoCapture(cam)
 		time.sleep(1)
@@ -302,7 +304,7 @@ class CookNet(nn.Module):
 		
 		temp=cv2.imread(temp_path, 1)
 		if cropdims is None:
-			minx, miny, maxx, maxy = getcoordinates(frame, temp, exportlog=True)
+			minx, miny, maxx, maxy = getcoordinates(frame, temp, exportlog=False)
 			cropdims=[minx, miny, maxx-minx, maxy-miny]
 
 		while ret:
@@ -321,10 +323,11 @@ class CookNet(nn.Module):
 			if dsti:
 				dsti.write(newframe)
 
-			cv2.imshow('result', np.array(newframe))
-			k=cv2.waitKey(1)
-			if k==ord('q'):
-				break
+			if display:
+				cv2.imshow('result', np.array(newframe))
+				k=cv2.waitKey(1)
+				if k==ord('q'):
+					break
 
 			if really_not_steaming:
 				if out[0,1]>=0.8: #not steaming but still predicted as steam
@@ -366,10 +369,19 @@ class CookNet(nn.Module):
 		if dstr:
 			dstr.release()
 
+		if get_cook_signal:
+			signals=[]
+			for x in range(0, len(sprobs), 100):
+				pslice=sprobs[:x]
+				_signal=self.is_cooked(pslice)
+				signals.append(_signal)
+
+			return signals
+
 	def is_cooked(self, 
 		probs, 
 		chunksize=100, 
-		pthreshold=0.5,
+		pthreshold=0.7,
 		mthreshold=0.1,
 		sthreshold=0.2
 		):
@@ -423,8 +435,8 @@ class CookTrainer(object):
 
 		self.net.to(device).train()
 
-		# self.net, self.optimizer = amp.initialize(self.net, self.optimizer,
-		# 							opt_level='O0', enabled=False)
+		self.net, self.optimizer = amp.initialize(self.net, self.optimizer,
+									opt_level='O2', enabled=True)
 
 		step=0
 		
@@ -446,10 +458,10 @@ class CookTrainer(object):
 				#print(loss.item())
 				self.writer.add_scalar('Training Loss', loss.item(), step)
 
-				# with amp.scale_loss(loss, self.optimizer) as scaled_loss:
-				# 	scaled_loss.backward()
+				with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+					scaled_loss.backward()
 
-				loss.backward()
+				#loss.backward()
 
 				torch.nn.utils.clip_grad_norm_(self.net.parameters(), 0.01)
 				self.optimizer.step()
@@ -491,8 +503,8 @@ class CookTrainer(object):
 
 		
 def main():
-	dm=ClassificationManager('./data') #'./resnet18_320p.pth'
-	net=CookNet(nclasses=dm.nclasses, resnetpath=None, loadpath=None)
+	dm=ClassificationManager('./data') #
+	net=CookNet(nclasses=dm.nclasses, resnetpath='./resnet18_320p.pth', loadpath=None)
 	trainer=CookTrainer(net,dm)
 	trainer.train(epochs=100, save='models/cook_{}.pth')
 
