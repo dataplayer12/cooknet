@@ -31,7 +31,7 @@ import sys
 from data.selectroi import getcoordinates
 
 class ImageData(Dataset):
-	def __init__(self, images, labels, size=[320, 240]):
+	def __init__(self, images, labels, nclasses,size=[320, 240]):
 		"""
 		images: a list of N paths for images in training set
 		labels: labels for images as list of length N
@@ -42,6 +42,7 @@ class ImageData(Dataset):
 		super(ImageData, self).__init__()
 		self.image_paths=images
 		self.labels=labels
+		self.nclasses=nclasses
 		self.inputsize=size
 		self.transforms=self.random_transforms()
 		if self.labels is not None:
@@ -79,9 +80,13 @@ class ImageData(Dataset):
 		if self.labels is None:
 			return img_tensor
 		else:
-			label_tensor=torch.tensor(self.labels[index])
-
-			return img_tensor, label_tensor
+			label_0d=torch.tensor(self.labels[index])
+			label_1hot=nn.functional.one_hot(label_0d, num_classes=self.nclasses)
+			eps=torch.rand(1)*0.1
+			signs=torch.tensor([1,-1])
+			noise=signs[label_1hot]*eps
+			noisy_label=label_1hot+noise
+			return img_tensor, noisy_label
 			
 			
 class ClassificationManager(object):
@@ -141,13 +146,13 @@ class ClassificationManager(object):
 		
 	def get_train_loader(self):
 		pass
-		tdata=ImageData(self.timages, self.tlabels)
+		tdata=ImageData(self.timages, self.tlabels, self.nclasses)
 		tloader=DataLoader(tdata, self.batchsize, shuffle=True, num_workers=8)
 		return tloader
 		
 	def get_valid_loader(self):
 		pass
-		vdata=ImageData(self.vimages, self.vlabels)
+		vdata=ImageData(self.vimages, self.vlabels, self.nclasses)
 		vloader=DataLoader(vdata, self.batchsize, shuffle=True, num_workers=8)
 		return vloader
 		
@@ -416,6 +421,22 @@ class CookNet(nn.Module):
 
 		return False
 
+class CrossEntropyWithLogitsLoss(nn.Module):
+	def __init__(self):
+		super(CrossEntropyWithLogitsLoss, self).__init__()
+
+	def forward(self, model_output, noisy_targets):
+		"""
+		Takes in unnormalized logits from model and
+		normalized but noisy target probabilities
+		i.e. targets are not 0/1 but e/1-e, where e is small
+		"""
+
+		model_probabilities=nn.functional.softmax(model_output, dim=1)
+
+		loss= - torch.mul(noisy_targets,torch.log(model_probabilities))
+
+		return torch.mean(loss)
 
 class CookTrainer(object):
 	def __init__(self, net, dm):
@@ -424,7 +445,7 @@ class CookTrainer(object):
 		self.dm=dm
 
 		self.writer=SummaryWriter()
-		self.criterion=nn.CrossEntropyLoss()
+		self.criterion=CrossEntropyWithLogitsLoss() #nn.CrossEntropyLoss()
 		self.optimizer=optim.AdamW(self.net.parameters(), lr=1e-6)
 		self.savepath=None
 
@@ -442,7 +463,7 @@ class CookTrainer(object):
 
 		step=0
 		
-		get_accuracy=lambda p,y: (torch.argmax(p, dim=1) == y).to(torch.float).mean().item()
+		get_accuracy=lambda p,y: (torch.argmax(p, dim=1) == torch.argmax(y, dim=1)).to(torch.float).mean().item()
 
 		for epoch in range(epochs):
 			estart=time.time()
@@ -451,7 +472,7 @@ class CookTrainer(object):
 
 				x=x.to(device)
 				y=y.to(device)
-				
+				#pdb.set_trace()
 				pred = self.net(x)
 				#print(pred.shape, y.shape)
 				
